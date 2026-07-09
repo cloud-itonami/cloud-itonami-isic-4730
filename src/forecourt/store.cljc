@@ -1,0 +1,357 @@
+(ns forecourt.store
+  "SSoT for the automotive-fuel-retail actor, behind a `Store` protocol so
+  the backend is a swap, not a rewrite -- the same seam every prior
+  `cloud-itonami-isic-*` actor in this fleet uses.
+
+    - `MemStore`     -- atom of EDN. The deterministic default for
+                        dev/tests/demo (no deps).
+    - `DatomicStore` -- backed by `langchain.db`, a Datomic-API-compatible
+                        EAV store (datalog q / pull / upsert). Pure `.cljc`,
+                        so it runs offline AND can be pointed at a real
+                        Datomic Local or a kotoba-server pod by swapping
+                        `langchain.db`'s `:db-api` (see langchain.kotoba-db).
+
+  Both implement the same protocol and pass the same contract
+  (test/forecourt/store_contract_test.clj), which is the whole point:
+  the actor, the Forecourt Safety Governor and the audit ledger never
+  know which SSoT they run on.
+
+  Like the crude sibling's own `well` entity (where `lift` and `settle`
+  apply SEQUENTIALLY to the same well), this vertical's `dispense` and
+  `settle` actuation events apply SEQUENTIALLY to the SAME `fuel-sale`
+  -- a real volume of fuel is dispensed through the pump first (act1),
+  the retail sale is settled later (act2), on the same fuel-sale
+  record. Dedicated double-actuation-guard booleans (`:dispensed?`/
+  `:settled?`, never a `:status` value) refuse a second dispense or a
+  second settlement of the same sale.
+
+  The ledger stays append-only on every backend: 'which fuel-sale was
+  screened for an uncertified meter, an anomalous price, an ullage
+  breach, or an inoperational vapor-recovery system, which sale had
+  fuel dispensed, which sale was settled, on what jurisdictional basis,
+  approved by whom' is always a query over an immutable log -- the
+  audit trail a regulator, a franchisee, or an operator trusting a
+  forecourt actor needs, and the evidence an operator needs if a
+  dispense or a settlement is later disputed."
+  (:require #?(:clj  [clojure.edn :as edn]
+               :cljs [cljs.reader :as edn])
+            [forecourt.registry :as registry]
+            [langchain.db :as d]))
+
+(defprotocol Store
+  (fuel-sale [s id])
+  (all-fuel-sales [s])
+  (price-assessment-of [s sale-id] "committed price/meter/VR evidence assessment, or nil")
+  (ledger [s])
+  (dispense-history [s] "the append-only fuel-dispense history (forecourt.registry drafts)")
+  (sale-history [s] "the append-only sale-settlement history (forecourt.registry drafts)")
+  (next-dispense-sequence [s jurisdiction] "next dispense-number sequence for a jurisdiction")
+  (next-sale-sequence [s jurisdiction] "next sale-number sequence for a jurisdiction")
+  (fuel-sale-already-dispensed? [s sale-id] "has fuel already been dispensed for this sale?")
+  (fuel-sale-already-settled? [s sale-id] "has this sale already been settled?")
+  (commit-record! [s record] "apply a committed op's record to the SSoT")
+  (append-ledger! [s fact]   "append one immutable decision fact")
+  (with-fuel-sales [s fuel-sales] "replace/seed the fuel-sale directory (map id->fuel-sale)"))
+
+;; ----------------------------- demo data -----------------------------
+
+(defn demo-data
+  "A small, self-contained fuel-sale set covering both actuation
+  lifecycles (dispense, settlement) plus the governor's own forecourt-
+  safety checks, so the actor + tests run offline. Each violation
+  fuel-sale isolates exactly ONE failure mode (the rest stay clean)
+  following the 'exercise the failure mode directly, never only via a
+  happy-path actuation' discipline every sibling governor's demo data
+  establishes. The reference date for the meter-certainty check is
+  carried in the operation context, not here."
+  []
+  {:fuel-sales
+   {"sale-1" {:id "sale-1" :sale-id "FS-2026-0001" :pump-id "P-03"
+              :product-grade "regular"
+              :volume-liters 40.0 :unit-price 175.0
+              :meter-certified-date "2025-06-01" :meter-validity-years 7
+              :price-band-min 150.0 :price-band-max 200.0
+              :tank-level-pct 60.0 :ullage-liters 2000.0
+              :vapor-recovery-operational? true
+              :dispensed? false :settled? false
+              :jurisdiction "JPN" :status :intake}
+    "sale-2" {:id "sale-2" :sale-id "FS-2026-0002" :pump-id "P-03"
+              :product-grade "regular"
+              :volume-liters 40.0 :unit-price 175.0
+              :meter-certified-date "2025-06-01" :meter-validity-years 7
+              :price-band-min 150.0 :price-band-max 200.0
+              :tank-level-pct 60.0 :ullage-liters 2000.0
+              :vapor-recovery-operational? true
+              :dispensed? false :settled? false
+              :jurisdiction "ATL" :status :intake}
+    "sale-3" {:id "sale-3" :sale-id "FS-2026-0003" :pump-id "P-04"
+              :product-grade "premium"
+              :volume-liters 40.0 :unit-price 185.0
+              :meter-certified-date "2018-06-01" :meter-validity-years 7
+              :price-band-min 150.0 :price-band-max 200.0
+              :tank-level-pct 60.0 :ullage-liters 2000.0
+              :vapor-recovery-operational? true
+              :dispensed? false :settled? false
+              :jurisdiction "JPN" :status :intake}
+    "sale-4" {:id "sale-4" :sale-id "FS-2026-0004" :pump-id "P-03"
+              :product-grade "regular"
+              :volume-liters 40.0 :unit-price 300.0
+              :meter-certified-date "2025-06-01" :meter-validity-years 7
+              :price-band-min 150.0 :price-band-max 200.0
+              :tank-level-pct 60.0 :ullage-liters 2000.0
+              :vapor-recovery-operational? true
+              :dispensed? false :settled? false
+              :jurisdiction "JPN" :status :intake}
+    "sale-5" {:id "sale-5" :sale-id "FS-2026-0005" :pump-id "P-05"
+              :product-grade "diesel"
+              :volume-liters 50.0 :unit-price 160.0
+              :meter-certified-date "2025-06-01" :meter-validity-years 7
+              :price-band-min 150.0 :price-band-max 200.0
+              :tank-level-pct 96.0 :ullage-liters 30.0
+              :vapor-recovery-operational? true
+              :dispensed? false :settled? false
+              :jurisdiction "JPN" :status :intake}
+    "sale-6" {:id "sale-6" :sale-id "FS-2026-0006" :pump-id "P-06"
+              :product-grade "regular"
+              :volume-liters 40.0 :unit-price 145.0
+              :meter-certified-date "2025-01-01" :meter-validity-years 10
+              :price-band-min 130.0 :price-band-max 160.0
+              :tank-level-pct 60.0 :ullage-liters 2000.0
+              :vapor-recovery-operational? false
+              :dispensed? false :settled? false
+              :jurisdiction "GBR" :status :intake}}})
+
+;; ----------------------------- shared commit logic -----------------------------
+
+(defn- dispense-fuel-sale!
+  "Backend-agnostic `:sale/mark-dispensed` -- looks up the fuel-sale via
+  the protocol and drafts the fuel-dispense record, and returns {:result
+  .. :sale-patch ..} for the caller to persist."
+  [s sale-id]
+  (let [fs (fuel-sale s sale-id)
+        seq-n (next-dispense-sequence s (:jurisdiction fs))
+        result (registry/register-dispense-record sale-id (:jurisdiction fs) seq-n)]
+    {:result    result
+     :sale-patch {:dispensed? true
+                  :dispense-number (get result "dispense_number")}}))
+
+(defn- settle-sale!
+  "Backend-agnostic `:sale/mark-settled` -- looks up the fuel-sale via
+  the protocol and drafts the sale-settlement record, and returns
+  {:result .. :sale-patch ..} for the caller to persist."
+  [s sale-id]
+  (let [fs (fuel-sale s sale-id)
+        seq-n (next-sale-sequence s (:jurisdiction fs))
+        result (registry/register-sale-record sale-id (:jurisdiction fs) seq-n)]
+    {:result    result
+     :sale-patch {:settled? true
+                  :sale-number (get result "sale_number")}}))
+
+;; ----------------------------- MemStore (default) -----------------------------
+
+(defrecord MemStore [a]
+  Store
+  (fuel-sale [_ id] (get-in @a [:fuel-sales id]))
+  (all-fuel-sales [_] (sort-by :id (vals (:fuel-sales @a))))
+  (price-assessment-of [_ sale-id] (get-in @a [:price-assessments sale-id]))
+  (ledger [_] (:ledger @a))
+  (dispense-history [_] (:dispenses @a))
+  (sale-history [_] (:sales @a))
+  (next-dispense-sequence [_ jurisdiction] (get-in @a [:dispense-sequences jurisdiction] 0))
+  (next-sale-sequence [_ jurisdiction] (get-in @a [:sale-sequences jurisdiction] 0))
+  (fuel-sale-already-dispensed? [_ sale-id] (boolean (get-in @a [:fuel-sales sale-id :dispensed?])))
+  (fuel-sale-already-settled? [_ sale-id] (boolean (get-in @a [:fuel-sales sale-id :settled?])))
+  (commit-record! [s {:keys [effect path value payload]}]
+    (case effect
+      :sale/upsert
+      (swap! a update-in [:fuel-sales (:id value)] merge value)
+
+      :price-assessment/set
+      (swap! a assoc-in [:price-assessments (first path)] payload)
+
+      :sale/mark-dispensed
+      (let [sale-id (first path)
+            {:keys [result sale-patch]} (dispense-fuel-sale! s sale-id)
+            jurisdiction (:jurisdiction (fuel-sale s sale-id))]
+        (swap! a (fn [state]
+                   (-> state
+                       (update-in [:dispense-sequences jurisdiction] (fnil inc 0))
+                       (update-in [:fuel-sales sale-id] merge sale-patch)
+                       (update :dispenses registry/append result))))
+        result)
+
+      :sale/mark-settled
+      (let [sale-id (first path)
+            {:keys [result sale-patch]} (settle-sale! s sale-id)
+            jurisdiction (:jurisdiction (fuel-sale s sale-id))]
+        (swap! a (fn [state]
+                   (-> state
+                       (update-in [:sale-sequences jurisdiction] (fnil inc 0))
+                       (update-in [:fuel-sales sale-id] merge sale-patch)
+                       (update :sales registry/append result))))
+        result)
+      nil)
+    s)
+  (append-ledger! [_ fact] (swap! a update :ledger conj fact) fact)
+  (with-fuel-sales [s fuel-sales] (when (seq fuel-sales) (swap! a assoc :fuel-sales fuel-sales)) s))
+
+(defn seed-db
+  "A MemStore seeded with the demo fuel-sale set. The deterministic default."
+  []
+  (->MemStore (atom (assoc (demo-data)
+                           :price-assessments {}
+                           :ledger [] :dispense-sequences {} :dispenses []
+                           :sale-sequences {} :sales []))))
+
+;; ----------------------------- DatomicStore (langchain.db) -----------------------------
+
+(def ^:private schema
+  "DataScript/Datomic-style schema: only constraint attrs are declared.
+  Map/compound values (assessment payloads, ledger facts, dispense/
+  sale records) are stored as EDN strings so `langchain.db` doesn't
+  expand them into sub-entities -- the same convention every sibling
+  actor's store uses."
+  {:fuel-sale/id                        {:db/unique :db.unique/identity}
+   :assessment/sale-id                  {:db/unique :db.unique/identity}
+   :ledger/seq                          {:db/unique :db.unique/identity}
+   :dispense/seq                        {:db/unique :db.unique/identity}
+   :sale/seq                            {:db/unique :db.unique/identity}
+   :dispense-sequence/jurisdiction      {:db/unique :db.unique/identity}
+   :sale-sequence/jurisdiction          {:db/unique :db.unique/identity}})
+
+(defn- enc [v] (pr-str v))
+(defn- dec* [s] (when s (edn/read-string s)))
+
+;; Every fuel-sale field is stored as its own Datomic attr so a governor
+;; pull reads the exact ground truth (no blob decode). Boolean fields
+;; are coerced on read so a missing attr reads back as false (parity
+;; with MemStore). [field-key tx-attr boolean?]
+(def ^:private fuel-sale-fields
+  [[:id :fuel-sale/id false]
+   [:sale-id :fuel-sale/sale-id false]
+   [:pump-id :fuel-sale/pump-id false]
+   [:product-grade :fuel-sale/product-grade false]
+   [:volume-liters :fuel-sale/volume-liters false]
+   [:unit-price :fuel-sale/unit-price false]
+   [:meter-certified-date :fuel-sale/meter-certified-date false]
+   [:meter-validity-years :fuel-sale/meter-validity-years false]
+   [:price-band-min :fuel-sale/price-band-min false]
+   [:price-band-max :fuel-sale/price-band-max false]
+   [:tank-level-pct :fuel-sale/tank-level-pct false]
+   [:ullage-liters :fuel-sale/ullage-liters false]
+   [:vapor-recovery-operational? :fuel-sale/vapor-recovery-operational? true]
+   [:dispensed? :fuel-sale/dispensed? true]
+   [:settled? :fuel-sale/settled? true]
+   [:jurisdiction :fuel-sale/jurisdiction false]
+   [:status :fuel-sale/status false]
+   [:dispense-number :fuel-sale/dispense-number false]
+   [:sale-number :fuel-sale/sale-number false]])
+
+(defn- fuel-sale->tx [fs]
+  (reduce (fn [tx [k attr _bool?]]
+            (let [v (get fs k)]
+              (cond-> tx (some? v) (assoc attr v))))
+          {:fuel-sale/id (:id fs)}
+          fuel-sale-fields))
+
+(def ^:private fuel-sale-pull (mapv second fuel-sale-fields))
+
+(defn- pull->fuel-sale [m]
+  (when (:fuel-sale/id m)
+    (reduce (fn [fs [k attr bool?]]
+              (let [v (get m attr)]
+                (cond
+                  bool?        (assoc fs k (boolean v))
+                  (some? v)    (assoc fs k v)
+                  :else        fs)))
+            {:id (:fuel-sale/id m)}
+            fuel-sale-fields)))
+
+(defrecord DatomicStore [conn]
+  Store
+  (fuel-sale [_ id]
+    (pull->fuel-sale (d/pull (d/db conn) fuel-sale-pull [:fuel-sale/id id])))
+  (all-fuel-sales [_]
+    (->> (d/q '[:find [?id ...] :where [?e :fuel-sale/id ?id]] (d/db conn))
+         (map #(pull->fuel-sale (d/pull (d/db conn) fuel-sale-pull [:fuel-sale/id %])))
+         (sort-by :id)))
+  (price-assessment-of [_ sale-id]
+    (dec* (d/q '[:find ?p . :in $ ?sid
+                :where [?a :assessment/sale-id ?sid] [?a :assessment/payload ?p]]
+              (d/db conn) sale-id)))
+  (ledger [_]
+    (->> (d/q '[:find ?s ?f :where [?e :ledger/seq ?s] [?e :ledger/fact ?f]] (d/db conn))
+         (sort-by first)
+         (mapv (comp dec* second))))
+  (dispense-history [_]
+    (->> (d/q '[:find ?s ?r :where [?e :dispense/seq ?s] [?e :dispense/record ?r]] (d/db conn))
+         (sort-by first)
+         (mapv (comp dec* second))))
+  (sale-history [_]
+    (->> (d/q '[:find ?s ?r :where [?e :sale/seq ?s] [?e :sale/record ?r]] (d/db conn))
+         (sort-by first)
+         (mapv (comp dec* second))))
+  (next-dispense-sequence [_ jurisdiction]
+    (or (d/q '[:find ?n . :in $ ?j
+              :where [?e :dispense-sequence/jurisdiction ?j] [?e :dispense-sequence/next ?n]]
+            (d/db conn) jurisdiction)
+        0))
+  (next-sale-sequence [_ jurisdiction]
+    (or (d/q '[:find ?n . :in $ ?j
+              :where [?e :sale-sequence/jurisdiction ?j] [?e :sale-sequence/next ?n]]
+            (d/db conn) jurisdiction)
+        0))
+  (fuel-sale-already-dispensed? [s sale-id]
+    (boolean (:dispensed? (fuel-sale s sale-id))))
+  (fuel-sale-already-settled? [s sale-id]
+    (boolean (:settled? (fuel-sale s sale-id))))
+  (commit-record! [s {:keys [effect path value payload]}]
+    (case effect
+      :sale/upsert
+      (d/transact! conn [(fuel-sale->tx value)])
+
+      :price-assessment/set
+      (d/transact! conn [{:assessment/sale-id (first path) :assessment/payload (enc payload)}])
+
+      :sale/mark-dispensed
+      (let [sale-id (first path)
+            {:keys [result sale-patch]} (dispense-fuel-sale! s sale-id)
+            jurisdiction (:jurisdiction (fuel-sale s sale-id))
+            next-n (inc (next-dispense-sequence s jurisdiction))]
+        (d/transact! conn
+                     [(fuel-sale->tx (assoc sale-patch :id sale-id))
+                      {:dispense-sequence/jurisdiction jurisdiction :dispense-sequence/next next-n}
+                      {:dispense/seq (count (dispense-history s)) :dispense/record (enc (get result "record"))}])
+        result)
+
+      :sale/mark-settled
+      (let [sale-id (first path)
+            {:keys [result sale-patch]} (settle-sale! s sale-id)
+            jurisdiction (:jurisdiction (fuel-sale s sale-id))
+            next-n (inc (next-sale-sequence s jurisdiction))]
+        (d/transact! conn
+                     [(fuel-sale->tx (assoc sale-patch :id sale-id))
+                      {:sale-sequence/jurisdiction jurisdiction :sale-sequence/next next-n}
+                      {:sale/seq (count (sale-history s)) :sale/record (enc (get result "record"))}])
+        result)
+      nil)
+    s)
+  (append-ledger! [s fact]
+    (d/transact! conn [{:ledger/seq (count (ledger s)) :ledger/fact (enc fact)}])
+    fact)
+  (with-fuel-sales [s fuel-sales]
+    (when (seq fuel-sales) (d/transact! conn (mapv fuel-sale->tx (vals fuel-sales)))) s))
+
+(defn datomic-store
+  "A DatomicStore (langchain.db backend) seeded from `data`
+  ({:fuel-sales ..}); empty when omitted."
+  ([] (datomic-store {}))
+  ([{:keys [fuel-sales]}]
+   (let [s (->DatomicStore (d/create-conn schema))]
+     (with-fuel-sales s fuel-sales))))
+
+(defn datomic-seed-db
+  "A DatomicStore seeded with the demo fuel-sale set -- the Datomic-backed
+  analog of `seed-db`, used to prove protocol parity."
+  []
+  (datomic-store (demo-data)))
