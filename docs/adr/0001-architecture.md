@@ -17,21 +17,20 @@ independent Governor + Phase 0->3 rollout pattern established by
 `cloud-itonami-isic-6511` (life insurance) and applied across the fleet.
 
 This actor is the **downstream retail** sibling in the petroleum value chain --
-distinct from the upstream crude (`cloud-itonami-isic-0610`, ISIC 0610) and
-natural-gas (`cloud-itonami-isic-0620`, ISIC 0620) extraction siblings. The
+distinct from the upstream crude- and natural-gas-extraction siblings. The
 shared discipline with those siblings is the sequential dual-actuation shape
 (dispense first, settle later, on the SAME fuel-sale entity -- exactly like the
 crude sibling's own `well` entity where `lift` and `settle` apply sequentially
 to the same well); the domain difference is everything else. This is a retail
 forecourt, not a wellhead: the governing concerns are legal metrology (no short
 measure), honest pricing, tank ullage / spill protection, and vapor-recovery
-readiness -- not reservoir pressure, annular/MAASP, water cut, or H2S/IDLH. The
-meter-calibration and price-band disciplines are reused from the `retailops`
-siblings (`retailops.governor`'s meter-calibration and price-band checks); the
-ullage check is an honest reapplication of the fabrication measured-value-vs-
-rated-limit discipline.
+readiness -- not the well-safety / sour-service envelope the upstream
+extraction siblings govern. The meter-calibration and price-band disciplines
+are reused from the `retailops` siblings (`retailops.governor`'s
+meter-calibration and price-band checks); the ullage check is an honest
+reapplication of the fabrication measured-value-vs-rated-limit discipline.
 
-Like `cloud-itonami-isic-0610`, `cloud-itonami-isic-0620`, and
+Like the crude- and natural-gas-extraction siblings and
 `cloud-itonami-isic-0810` (quarrying), this vertical has NO bespoke domain
 capability library in `kotoba-lang` to wrap (verified: no
 `kotoba-lang/forecourt`-style repo exists, and `kotoba-lang/robotics` is the
@@ -137,9 +136,9 @@ every `:pump/dispense`. This honestly models the real-world regulatory
 construction (a threshold model: the requirement exists only above a mandated
 threshold) rather than pretending every jurisdiction mandates the same thing.
 This replaces the upstream petroleum siblings' `integrity-flag-unresolved`
-check (Decision 5 in `cloud-itonami-isic-0610`): a forecourt has no integrity-
-flag lifecycle, but it does have a jurisdiction-conditional vapor-recovery
-requirement, which is the domain-appropriate gate here.
+check (Decision 5 in the crude-extraction sibling's own ADR): a forecourt has
+no integrity-flag lifecycle, but it does have a jurisdiction-conditional
+vapor-recovery requirement, which is the domain-appropriate gate here.
 
 ### Decision 6: dedicated double-actuation-guard booleans
 
@@ -184,13 +183,13 @@ hiccup can never auto-dispense fuel or auto-settle a sale.
   `kotoba-lang/robotics` is generic, not forecourt-specific. Forcing a false
   capability-library integration would be dishonest; this build correctly
   uses self-contained domain logic instead.
-- **Reusing the upstream petroleum siblings' well-safety checks (reservoir
-  pressure, annular/MAASP, H2S/IDLH, integrity flag).** Rejected: those are
-  wellhead concerns and are not meaningful at a retail forecourt, where the
-  governing concerns are legal metrology (meter certification), honest pricing
-  (price band), spill/overfill protection (ullage), and vapor-recovery
-  readiness. The honest domain-appropriate replacements are the
-  meter-certainty, price-band, overfill and vapor-recovery checks, which
+- **Reusing the upstream petroleum extraction siblings' well-safety /
+  sour-service checks.** Rejected: those are wellhead concerns and are not
+  meaningful at a retail forecourt, where the governing concerns are legal
+  metrology (meter certification), honest pricing (price band), spill/overfill
+  protection (ullage), and vapor-recovery readiness. The honest
+  domain-appropriate replacements are the meter-certainty, price-band,
+  overfill and vapor-recovery checks, which
   reapply the retailops meter-calibration / price-band and fabrication
   measured-value-vs-rated-limit disciplines to forecourt-relevant values.
 - **A `:kind`-distinguished entity** (matching the retail sibling's `order`
@@ -218,8 +217,7 @@ hiccup can never auto-dispense fuel or auto-settle a sale.
 ## Consequences
 
 - Adds the downstream automotive-fuel-retail (ISIC 4730) sibling to the
-  petroleum value chain, complementing the upstream crude
-  (`cloud-itonami-isic-0610`) and natural-gas (`cloud-itonami-isic-0620`)
+  petroleum value chain, complementing the upstream crude- and natural-gas-
   extraction siblings; the cloud-itonami fleet continues to populate on the
   same governed-actor architecture.
 - Establishes the forecourt-safety physical range-check suite as honest
