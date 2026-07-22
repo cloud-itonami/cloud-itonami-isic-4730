@@ -33,10 +33,9 @@
   audit trail a regulator, a franchisee, or an operator trusting a
   forecourt actor needs, and the evidence an operator needs if a
   dispense or a settlement is later disputed."
-  (:require #?(:clj  [clojure.edn :as edn]
-               :cljs [cljs.reader :as edn])
-            [forecourt.registry :as registry]
-            [langchain.db :as d]))
+  (:require [forecourt.registry :as registry]
+            [langchain.db :as d]
+            [langchain-store.core :as ls]))
 
 (defprotocol Store
   (fuel-sale [s id])
@@ -219,8 +218,10 @@
    :dispense-sequence/jurisdiction      {:db/unique :db.unique/identity}
    :sale-sequence/jurisdiction          {:db/unique :db.unique/identity}})
 
-(defn- enc [v] (pr-str v))
-(defn- dec* [s] (when s (edn/read-string s)))
+;; EDN-blob codec: kotoba-lang/langchain-store's shared machinery
+;; (ADR-2607141600) instead of a hand-rolled two-liner.
+(defn- enc [v] (ls/enc v))
+(defn- dec* [s] (ls/dec* s))
 
 ;; Every fuel-sale field is stored as its own Datomic attr so a governor
 ;; pull reads the exact ground truth (no blob decode). Boolean fields
