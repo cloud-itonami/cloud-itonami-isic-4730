@@ -13,7 +13,15 @@
  ;; This repo is standalone (forkable outside the workspace); the
  ;; :local/root paths only resolve inside the monorepo checkout -- a
  ;; standalone fork should override them with git coordinates.
- :deps {io.github.kotoba-lang/langgraph
+ :deps {;; デジタル庁デザインシステム(DADS) -- this workspace's BASE design
+        ;; system. `jp-go-dds.skin/dds+skin` styles the build-time
+        ;; operator console (`forecourt.render-html`) without touching
+        ;; its markup. Git coordinates, not :local/root: this dep must
+        ;; resolve from a standalone fork too.
+        io.github.kotoba-lang/jp-go-digital-design-system
+        {:git/url "https://github.com/kotoba-lang/jp-go-digital-design-system"
+         :git/sha "83db99546eabc53613ae826ea41d1533a3c574af"}
+        io.github.kotoba-lang/langgraph
         {:local/root "../../kotoba-lang/langgraph"}
         ;; shared langchain.db store seam (EDN-blob codec + identity
         ;; schema + event-log read/append helpers) that ~190
@@ -29,6 +37,11 @@
          {:local/root "../../kotoba-lang/langchain"}}}
   ;; clojure -M:dev:run  -> drive the demo through one OperationActor
   :run {:main-opts ["-m" "forecourt.sim"]}
+  ;; clojure -M:dev:render-html [out-file] -> regenerate
+  ;; docs/samples/operator-console.html by RUNNING the real actor
+  ;; (flagship checklist item 2). Refuses to write a page whose ledger
+  ;; contains zero :governor-hold facts.
+  :render-html {:main-opts ["-m" "forecourt.render-html"]}
   :test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}

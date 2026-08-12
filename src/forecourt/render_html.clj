@@ -1,0 +1,459 @@
+(ns forecourt.render-html
+  "Build-time HTML renderer for `docs/samples/operator-console.html`.
+
+  Closes flagship checklist item 2 for this repo. The page that was
+  checked in before this namespace existed was a HAND-WRITTEN stub: it
+  named an operator (`Akita Fuel Mart`, `Atlantis Fuels`) that appears
+  NOWHERE in `forecourt.store/demo-data`, and no generator produced it,
+  so nothing kept it honest as the actor changed.
+
+  This namespace drives the REAL actor stack -- `forecourt.operation`'s
+  langgraph StateGraph (`:intake -> :advise -> :govern -> :decide ->
+  :commit | :hold | :request-approval`) over a real seeded
+  `forecourt.store/MemStore`, with every proposal censored by the real
+  `forecourt.governor` -- and renders the page from the resulting real
+  store, real audit ledger and real per-run audit channels. Every id,
+  number, disposition, rule and reason below is read back out of actor
+  output; none of it is typed into this file.
+
+  The scenario deliberately reaches BOTH dispositions the console has to
+  be able to show:
+
+    - a full clean lifecycle on `sale-1` -- intake auto-commits at phase
+      3 (`forecourt.phase`'s only `:auto` member), then a price/meter/
+      vapor-recovery assessment, a real fuel dispense and a real sale
+      settlement each ESCALATE to a human station manager and commit on
+      approval (`:pump/dispense`/`:sale/settle` never auto-commit at any
+      phase -- the governor's `high-stakes` set and the phase gate agree
+      independently); and
+    - SEVEN HARD holds that never reach a human, one per failure mode
+      the Forecourt Safety Governor defends: `:no-spec-basis` (an
+      unregistered jurisdiction), `:meter-uncertain`, `:price-anomaly`,
+      `:overfill-risk`, `:vapor-recovery-inoperational`,
+      `:already-dispensed` and `:already-settled`.
+
+  Determinism: the store is a freshly seeded MemStore, the advisor is
+  the deterministic mock, ledger order is insertion order, fuel-sales
+  are sorted by id, and every map iterated for display is sorted by key.
+  The only clock this actor reads is the meter-certainty reference date,
+  and it is pinned HERE (`reference-date`) and passed in through the
+  operation context rather than defaulted inside the governor -- so the
+  page carries no wall-clock value and two runs are byte-identical.
+
+  Usage: `clojure -M:dev:render-html [out-file]`
+  (default `docs/samples/operator-console.html`)."
+  (:require [clojure.string :as str]
+            [jp-go-dds.skin]
+            [langgraph.graph :as g]
+            [forecourt.facts :as facts]
+            [forecourt.governor :as governor]
+            [forecourt.operation :as op]
+            [forecourt.phase :as phase]
+            [forecourt.store :as store]))
+
+;; The single pinned clock. `forecourt.governor` defaults to its own
+;; `reference-date` when the context carries none; we pass it explicitly
+;; so the page's determinism is a property of THIS caller, not of a
+;; constant buried in the governor that a deployment is expected to
+;; override with a wall clock.
+(def ^:private reference-date "2026-07-09")
+
+(def ^:private operator
+  {:actor-id "op-1" :actor-role :station-manager :phase 3
+   :reference-date reference-date})
+
+;; ----------------------------- driving the real actor -----------------------------
+
+(defn- exec! [actor tid request]
+  (g/run* actor {:request request :context operator} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "op-1"}}
+          {:thread-id tid :resume? true}))
+
+(defn- record-run
+  "Capture one finished operation as {:tid .. :request .. :status ..
+  :disposition .. :audit ..} -- all read back out of the graph result,
+  never asserted here."
+  [runs tid request result]
+  (conj runs {:tid tid
+              :request request
+              :status (:status result)
+              :disposition (get-in result [:state :disposition])
+              :audit (vec (get-in result [:state :audit]))}))
+
+(defn run-demo!
+  "Runs a fresh seeded store through the scenario described in the ns
+  docstring. Returns {:db <store> :runs [<one entry per operation>]} --
+  the store carries the SSoT + append-only ledger, the runs carry each
+  operation's own audit channel (which is where `:approval-requested` /
+  `:approval-granted` live; the ledger itself only ever receives
+  `:committed` and `:governor-hold` facts, by design of
+  `forecourt.operation`'s `:commit` and `:hold` nodes)."
+  []
+  (let [db (store/seed-db)
+        actor (op/build db)
+        runs (atom [])
+        step! (fn [tid request approve?]
+                (let [r (exec! actor tid request)
+                      r (if (and approve? (= :interrupted (:status r)))
+                          (approve! actor tid)
+                          r)]
+                  (swap! runs record-run tid request r)))]
+    ;; --- clean lifecycle: sale-1 (JPN, every check inside its envelope) ---
+    (step! "t1" {:op :sale/intake :subject "sale-1"
+                 :patch {:id "sale-1" :pump-id "P-03"}} false)
+    (step! "t2" {:op :price/verify :subject "sale-1"} true)
+    (step! "t3" {:op :pump/dispense :subject "sale-1"} true)
+    (step! "t4" {:op :sale/settle :subject "sale-1"} true)
+
+    ;; --- HARD hold 1: a jurisdiction with no official spec-basis ---
+    (step! "t5" {:op :price/verify :subject "sale-2"} false)
+
+    ;; --- HARD hold 2: pump meter past its legal reverification validity ---
+    (step! "t6" {:op :price/verify :subject "sale-3"} true)
+    (step! "t7" {:op :pump/dispense :subject "sale-3"} false)
+
+    ;; --- HARD hold 3: unit-price outside the recorded price band ---
+    (step! "t8" {:op :price/verify :subject "sale-4"} true)
+    (step! "t9" {:op :pump/dispense :subject "sale-4"} false)
+
+    ;; --- HARD hold 4: dispense volume breaches the tank's ullage ---
+    (step! "t10" {:op :price/verify :subject "sale-5"} true)
+    (step! "t11" {:op :pump/dispense :subject "sale-5"} false)
+
+    ;; --- HARD hold 5: vapor recovery inoperational where MANDATED ---
+    (step! "t12" {:op :price/verify :subject "sale-6"} true)
+    (step! "t13" {:op :pump/dispense :subject "sale-6"} false)
+
+    ;; --- HARD holds 6/7: double actuation of the same sale ---
+    (step! "t14" {:op :pump/dispense :subject "sale-1"} false)
+    (step! "t15" {:op :sale/settle :subject "sale-1"} false)
+
+    {:db db :runs @runs}))
+
+;; ----------------------------- rendering helpers -----------------------------
+
+(defn- esc [v]
+  (-> (str v)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")))
+
+(defn- kw
+  "Render a keyword with its namespace intact (`(name :pump/dispense)`
+  would silently print `dispense` and lose the half that says what it
+  acts on)."
+  [k]
+  (if (keyword? k) (subs (str k) 1) (str k)))
+
+(defn- code [v] (str "<code>" (esc v) "</code>"))
+
+(defn- facts-of-type [audit t]
+  (filter #(= t (:t %)) audit))
+
+(defn- hold-fact-of [audit]
+  (first (facts-of-type audit :governor-hold)))
+
+(defn- run-outcome
+  "The disposition label for one run, derived ONLY from the facts that
+  run actually emitted. `:label` is markup (it carries entities);
+  `:detail` is PLAIN text and is escaped by the caller -- keep entities
+  out of it or they get double-escaped."
+  [{:keys [audit]}]
+  (let [hold (hold-fact-of audit)
+        approved (first (facts-of-type audit :approval-granted))
+        requested (first (facts-of-type audit :approval-requested))
+        committed (first (facts-of-type audit :committed))]
+    (cond
+      hold {:class "critical" :label (str "HARD hold &middot; "
+                                          (esc (str/join ", " (map kw (:basis hold)))))
+            :detail (str/join " / " (map :detail (:violations hold)))}
+      approved {:class "ok" :label "human approved &rarr; committed"
+                :detail (str "escalated (" (kw (:reason requested))
+                             "), approved by " (:by approved))}
+      requested {:class "warn" :label "awaiting approval"
+                 :detail (str "escalated (" (kw (:reason requested)) "), unresolved")}
+      committed {:class "ok" :label "auto-committed"
+                 :detail (str "phase " (:phase operator) ", no human in the loop")}
+      :else {:class "muted" :label "no disposition" :detail ""})))
+
+;; ----------------------------- sections -----------------------------
+
+(defn- fuel-sale-rows
+  "The SSoT as the actor left it. `:dispensed?`/`:settled?` are the
+  dedicated double-actuation guards (never a `:status` value), and
+  `:dispense-number`/`:sale-number` are the registry drafts the commits
+  actually produced."
+  [db]
+  (->> (store/all-fuel-sales db)
+       (map (fn [{:keys [id sale-id pump-id product-grade jurisdiction
+                         volume-liters unit-price dispensed? settled?
+                         dispense-number sale-number]}]
+              (format (str "        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                           "<td>%s</td><td class=\"num\">%s</td><td class=\"num\">%s</td>"
+                           "<td>%s</td><td>%s</td></tr>")
+                      (esc id) (esc sale-id) (esc pump-id) (esc product-grade)
+                      (esc jurisdiction) (esc volume-liters) (esc unit-price)
+                      (if dispensed?
+                        (str "<span class=\"ok\">dispensed &middot; " (esc dispense-number) "</span>")
+                        "<span class=\"muted\">not dispensed</span>")
+                      (if settled?
+                        (str "<span class=\"ok\">settled &middot; " (esc sale-number) "</span>")
+                        "<span class=\"muted\">not settled</span>"))))
+       (str/join "\n")))
+
+(defn- run-rows [runs]
+  (->> runs
+       (map (fn [{:keys [tid request] :as run}]
+              (let [{:keys [class label detail]} (run-outcome run)]
+                (format (str "        <tr><td>%s</td><td>%s</td><td>%s</td>"
+                             "<td><span class=\"%s\">%s</span></td><td>%s</td></tr>")
+                        (esc tid) (code (kw (:op request))) (esc (:subject request))
+                        class label (esc detail)))))
+       (str/join "\n")))
+
+(defn- hold-rows
+  "Every HARD hold this run produced, with the governor's own violation
+  detail string. These never reach a human approver."
+  [ledger]
+  (->> ledger
+       (filter #(= :governor-hold (:t %)))
+       (mapcat (fn [f]
+                 (map (fn [v]
+                        (format (str "        <tr><td>%s</td><td>%s</td>"
+                                     "<td><span class=\"critical\">%s</span></td><td>%s</td></tr>")
+                                (esc (:subject f)) (code (kw (:op f)))
+                                (esc (kw (:rule v))) (esc (:detail v))))
+                      (:violations f))))
+       (str/join "\n")))
+
+(defn- gate-rows
+  "The actuation gate, DERIVED from the actor's own rollout policy --
+  `forecourt.phase/write-ops`, the phase-3 `:auto` set and
+  `forecourt.governor/high-stakes` -- rather than hand-described. If
+  someone ever adds `:pump/dispense` to a phase's `:auto` set, this row
+  changes on the next build instead of quietly disagreeing with the
+  code."
+  []
+  (let [ph (:phase operator)
+        auto (get-in phase/phases [ph :auto])]
+    (->> (sort-by kw phase/write-ops)
+         (map (fn [o]
+                (let [stakes? (contains? governor/high-stakes o)
+                      auto? (contains? auto o)]
+                  (format "        <tr><td>%s</td><td>%s</td><td>%s</td></tr>"
+                          (code (kw o))
+                          (if stakes?
+                            "<span class=\"critical\">high stakes &middot; real-world act</span>"
+                            "<span class=\"muted\">draft / record only</span>")
+                          (if auto?
+                            (str "<span class=\"ok\">may auto-commit at phase " ph
+                                 " when the governor is clean</span>")
+                            "<span class=\"warn\">human approval required &middot; never auto at any phase</span>")))))
+         (str/join "\n"))))
+
+(defn- jurisdiction-rows
+  "The spec-basis catalog the governor checks citations against. Sorted
+  by ISO3 so the page is stable; the jurisdictions the scenario actually
+  touched are marked from the store, not from a list typed here."
+  [db]
+  (let [touched (set (map :jurisdiction (store/all-fuel-sales db)))]
+    (->> (sort (keys facts/catalog))
+         (map (fn [iso3]
+                (let [{:keys [owner-authority legal-basis required-evidence]} (facts/catalog iso3)]
+                  (format (str "        <tr><td>%s</td><td>%s</td><td>%s</td>"
+                               "<td class=\"num\">%s</td><td>%s</td><td>%s</td></tr>")
+                          (esc iso3) (esc owner-authority) (esc legal-basis)
+                          (esc (count required-evidence))
+                          (if (facts/vapor-recovery-mandated? iso3)
+                            "<span class=\"warn\">Stage-II mandated</span>"
+                            "<span class=\"muted\">not mandated</span>")
+                          (if (touched iso3)
+                            "<span class=\"ok\">in this run</span>"
+                            "<span class=\"muted\">&mdash;</span>")))))
+         (str/join "\n"))))
+
+(defn- ledger-rows [ledger]
+  (->> ledger
+       (map-indexed
+        (fn [i {:keys [t op subject basis disposition]}]
+          (format (str "        <tr><td class=\"num\">%s</td><td>%s</td><td>%s</td>"
+                       "<td>%s</td><td>%s</td><td>%s</td></tr>")
+                  i (esc (kw t)) (code (kw op)) (esc subject)
+                  (esc (kw disposition))
+                  (esc (str/join ", " (map kw basis))))))
+       (str/join "\n")))
+
+(defn- draft-record-rows [db]
+  (->> (concat (store/dispense-history db) (store/sale-history db))
+       (map (fn [r]
+              (format (str "        <tr><td>%s</td><td>%s</td><td>%s</td>"
+                           "<td>%s</td><td>%s</td></tr>")
+                      (code (get r "record_id")) (esc (get r "kind"))
+                      (esc (get r "fuel_sale_id")) (esc (get r "jurisdiction"))
+                      (if (get r "immutable")
+                        "<span class=\"ok\">immutable draft</span>"
+                        "<span class=\"muted\">&mdash;</span>"))))
+       (str/join "\n")))
+
+;; ----------------------------- document -----------------------------
+
+(defn render
+  "Renders the whole operator console from a finished
+  `run-demo!` result. Pure: same input, same bytes."
+  [{:keys [db runs]}]
+  (let [ledger (vec (store/ledger db))
+        holds (filter #(= :governor-hold (:t %)) ledger)
+        commits (filter #(= :committed (:t %)) ledger)
+        approvals (filter #(seq (facts-of-type (:audit %) :approval-granted)) runs)
+        ;; Coverage is reported against the jurisdictions this run
+        ;; ACTUALLY touched, not against the catalog's own key set --
+        ;; `(facts/coverage)` with no args asks the catalog about itself
+        ;; and can only ever answer "100%", which is exactly the kind of
+        ;; self-congratulating number `forecourt.facts` says not to
+        ;; report. Asking it about the store's jurisdictions surfaces the
+        ;; uncovered one.
+        cov (facts/coverage (sort (distinct (map :jurisdiction (store/all-fuel-sales db)))))]
+    (str
+     "<html><head><meta charset=\"utf-8\">"
+     "<title>cloud-itonami-isic-4730 &middot; retail sale of automotive fuel</title><style>"
+     (jp-go-dds.skin/dds+skin)
+     "</style></head><body>\n"
+     "<header class=\"bar\">\n"
+     "  <h1>Retail sale of automotive fuel (ISIC 4730) — Operator Console</h1>\n"
+     "  <span class=\"badge\">read-only sample · governor-gated · fuel dispense &amp; sale settlement always human-approved</span>\n"
+     "</header>\n"
+     "<main>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>This run</h2>\n"
+     "    <p class=\"muted\">Build-time generated by <code>forecourt.render-html</code> (<code>clojure -M:dev:render-html</code>) by actually running <code>forecourt.operation</code>'s langgraph StateGraph over a freshly seeded <code>forecourt.store</code>. Nothing on this page is hand-written HTML: every id, number, disposition and reason below was read back out of the actor. Meter-certainty reference date is pinned at <code>"
+     (esc reference-date) "</code> so reruns are byte-identical.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Operations run</th><th>Committed</th><th>Human approvals</th><th>HARD holds (never reach a human)</th><th>Jurisdictions in this run with a spec-basis</th></tr></thead>\n"
+     "      <tbody>\n"
+     (format (str "        <tr><td class=\"num\">%s</td><td class=\"num\">%s</td>"
+                  "<td class=\"num\">%s</td><td class=\"num\"><span class=\"critical\">%s</span></td>"
+                  "<td class=\"num\">%s / %s%s</td></tr>")
+             (count runs) (count commits) (count approvals) (count holds)
+             (:covered cov) (:requested cov)
+             (if-let [missing (seq (:missing-jurisdictions cov))]
+               (str " <span class=\"critical\">missing: "
+                    (esc (str/join ", " missing)) "</span>")
+               ""))
+     "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>Fuel sales (SSoT after the run)</h2>\n"
+     "    <p class=\"muted\">Straight out of <code>forecourt.store/all-fuel-sales</code>. <code>dispensed?</code> and <code>settled?</code> are dedicated double-actuation guards — never a <code>:status</code> value — and the record numbers are the registry drafts the approved commits produced.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>ID</th><th>Sale ref</th><th>Pump</th><th>Grade</th><th>Jurisdiction</th><th>Volume (L)</th><th>Unit price</th><th>Dispense</th><th>Settlement</th></tr></thead>\n"
+     "      <tbody>\n"
+     (fuel-sale-rows db) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>Operations (one graph run each)</h2>\n"
+     "    <p class=\"muted\">One row per <code>langgraph.graph/run*</code>. A HARD hold is un-overridable and never reaches an approver; an escalation pauses the graph at <code>:request-approval</code> until a human station manager resumes it.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Thread</th><th>Op</th><th>Fuel sale</th><th>Outcome</th><th>Reason</th></tr></thead>\n"
+     "      <tbody>\n"
+     (run-rows runs) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>HARD holds (Forecourt Safety Governor)</h2>\n"
+     "    <p class=\"muted\">Each row is a violation the governor raised by INDEPENDENTLY re-verifying the fuel sale's own recorded ground truth — the advisor's self-reported confidence is never trusted. A human approver cannot override any of these.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Fuel sale</th><th>Op</th><th>Rule</th><th>Governor detail</th></tr></thead>\n"
+     "      <tbody>\n"
+     (hold-rows ledger) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>Actuation gate</h2>\n"
+     "    <p class=\"muted\">Derived from <code>forecourt.phase/write-ops</code>, the phase-"
+     (esc (:phase operator))
+     " <code>:auto</code> set and <code>forecourt.governor/high-stakes</code> — not described by hand, so it cannot drift away from the code.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Op</th><th>Stake</th><th>Gate</th></tr></thead>\n"
+     "      <tbody>\n"
+     (gate-rows) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>Jurisdictional spec-basis</h2>\n"
+     "    <p class=\"muted\">"
+     (esc (:note cov))
+     " A jurisdiction absent from this table has NO spec-basis, and the governor holds any proposal that cites one for it — which is exactly what <code>sale-2</code> hit above.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>ISO3</th><th>Authority</th><th>Legal basis</th><th>Required evidence</th><th>Vapor recovery</th><th>Touched</th></tr></thead>\n"
+     "      <tbody>\n"
+     (jurisdiction-rows db) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>Draft records produced</h2>\n"
+     "    <p class=\"muted\">Append-only fuel-dispense and sale-settlement drafts from <code>forecourt.registry</code>. Unsigned by construction — signature is the operator's act, not this actor's.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>Record</th><th>Kind</th><th>Fuel sale</th><th>Jurisdiction</th><th>Status</th></tr></thead>\n"
+     "      <tbody>\n"
+     (draft-record-rows db) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+
+     "  <section class=\"card\">\n"
+     "    <h2>Audit ledger (append-only)</h2>\n"
+     "    <p class=\"muted\">The immutable decision-fact log <code>forecourt.operation</code>'s <code>:commit</code> and <code>:hold</code> nodes wrote. This is the evidence a regulator, a franchisee or a disputing customer would be shown.</p>\n"
+     "    <table>\n"
+     "      <thead><tr><th>#</th><th>Fact</th><th>Op</th><th>Fuel sale</th><th>Disposition</th><th>Basis</th></tr></thead>\n"
+     "      <tbody>\n"
+     (ledger-rows ledger) "\n"
+     "      </tbody>\n"
+     "    </table>\n"
+     "  </section>\n"
+     "</main>\n"
+     "</body></html>\n")))
+
+(defn -main [& args]
+  (let [out (or (first args) "docs/samples/operator-console.html")
+        {:keys [db runs] :as result} (run-demo!)
+        ledger (vec (store/ledger db))
+        holds (filter #(= :governor-hold (:t %)) ledger)]
+    ;; Build-time invariant, not a convention: this console exists to
+    ;; show that the governor can REFUSE. A scenario that produced no
+    ;; HARD hold would render a page that quietly claims everything is
+    ;; permitted, so refuse to write it at all.
+    (when (zero? (count holds))
+      (throw (ex-info
+              (str "refusing to write " out
+                   ": the scenario produced ZERO :governor-hold ledger entries. "
+                   "The operator console must demonstrate at least one HARD hold "
+                   "(a governor refusal that never reaches a human approver) "
+                   "alongside the clean path -- otherwise it misrepresents the actor "
+                   "as never refusing anything. Fix forecourt.render-html/run-demo! "
+                   "(or the governor) before regenerating.")
+              {:out out :ledger-facts (count ledger) :holds 0
+               :runs (count runs)})))
+    (spit out (render result))
+    (println "wrote" out
+             (str "(" (count ledger) " ledger facts, "
+                  (count holds) " HARD holds, "
+                  (count (filter #(= :committed (:t %)) ledger)) " commits, "
+                  (count (store/dispense-history db)) " dispense drafts, "
+                  (count (store/sale-history db)) " settlement drafts)"))))
