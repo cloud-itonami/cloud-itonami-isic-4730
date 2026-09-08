@@ -29,7 +29,7 @@
   through a pump or settling a real sale itself (that is `forecourt.
   operation`'s `:pump/dispense`/`:sale/settle`, always human-gated --
   see README `Actuation`)."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (defn- unsigned-certificate
   "Every certificate this actor produces is UNSIGNED -- signature is
@@ -152,7 +152,7 @@
     (throw (ex-info "fuel-dispense: jurisdiction required" {})))
   (when (< sequence 0)
     (throw (ex-info "fuel-dispense: sequence must be >= 0" {})))
-  (let [dispense-number (str (str/upper-case jurisdiction) "-DISPENSE-" (zero-pad sequence 6))
+  (let [dispense-number (str (str/upper jurisdiction) "-DISPENSE-" (zero-pad sequence 6))
         record {"record_id" dispense-number
                 "kind" "fuel-dispense-draft"
                 "fuel_sale_id" fuel-sale-id
@@ -176,7 +176,7 @@
     (throw (ex-info "sale-settlement: jurisdiction required" {})))
   (when (< sequence 0)
     (throw (ex-info "sale-settlement: sequence must be >= 0" {})))
-  (let [sale-number (str (str/upper-case jurisdiction) "-SALE-" (zero-pad sequence 6))
+  (let [sale-number (str (str/upper jurisdiction) "-SALE-" (zero-pad sequence 6))
         record {"record_id" sale-number
                 "kind" "sale-settlement-draft"
                 "fuel_sale_id" fuel-sale-id
