@@ -13,7 +13,12 @@
  ;; This repo is standalone (forkable outside the workspace); the
  ;; :local/root paths only resolve inside the monorepo checkout -- a
  ;; standalone fork should override them with git coordinates.
- :deps {;; デジタル庁デザインシステム(DADS) -- this workspace's BASE design
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       ;; デジタル庁デザインシステム(DADS) -- this workspace's BASE design
         ;; system. `jp-go-dds.skin/dds+skin` styles the build-time
         ;; operator console (`forecourt.render-html`) without touching
         ;; its markup. Git coordinates, not :local/root: this dep must
