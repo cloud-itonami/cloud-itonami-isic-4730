@@ -230,7 +230,7 @@ hiccup can never auto-dispense fuel or auto-settle a sale.
 - `MemStore` || `DatomicStore` parity is proven by
   `test/forecourt/store_contract_test.cljk`.
 - 38 tests / 194 assertions pass; lint is clean; the demo
-  (`clojure -M:dev:run`) walks one clean dispense + settlement lifecycle,
+  (`kbb -M:dev:run`) walks one clean dispense + settlement lifecycle,
   plus seven HARD-hold scenarios (no spec-basis, meter-uncertain,
   price-anomaly, overfill-risk, vapor-recovery-inoperational, double dispense,
   double settlement), end-to-end.

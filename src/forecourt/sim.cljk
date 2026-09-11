@@ -1,5 +1,5 @@
 (ns forecourt.sim
-  "Demo driver -- `clojure -M:dev:run`. Walks a clean fuel-sale through
+  "Demo driver -- `kbb -M:dev:run`. Walks a clean fuel-sale through
   intake -> price/meter/VR safety assessment -> fuel dispense (escalate/
   approve/commit) -> sale settlement (escalate/approve/commit), then
   shows HARD-hold scenarios: a jurisdiction with no spec-basis, an

@@ -85,7 +85,7 @@ fabricated spec-basis, a dispense started with incomplete evidence, an expired
 meter, an out-of-band price, an ullage breach, or an inoperational
 vapor-recovery system, or a settlement posted without a human sign-off.
 
-## Feel the Decision Gate: `clojure -M:dev:run`
+## Feel the Decision Gate: `kbb -M:dev:run`
 
 This vertical has no companion playable prototype yet (unlike the freight
 sibling's `itonami/freight-dispatch` game). The fastest hands-on way to feel

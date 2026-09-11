@@ -271,7 +271,7 @@ bigger.
 ## Maturity
 
 `:implemented` -- `ForecourtAdvisor` + `Forecourt Safety Governor` run as real,
-tested code (`clojure -M:dev:test`: 38 tests / 194 assertions, 0 failures; lint
+tested code (`kbb -M:dev:test`: 38 tests / 194 assertions, 0 failures; lint
 clean), promoted from the originally-published `:blueprint`-tier scaffold,
 following the SAME governed-actor architecture as the other prior actors
 across this fleet, with its own distinct, independently-named governor and its
