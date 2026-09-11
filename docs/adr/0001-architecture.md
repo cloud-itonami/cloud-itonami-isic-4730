@@ -151,7 +151,7 @@ bug (ADR-2607071320).
 
 `forecourt.store/Store` is implemented by both `MemStore` (atom-backed, default
 for dev/tests/demo) and `DatomicStore` (`langchain.db`-backed), proven to
-satisfy the same contract in `test/forecourt/store_contract_test.clj`. The
+satisfy the same contract in `test/forecourt/store_contract_test.cljk`. The
 ledger stays append-only on every backend: which fuel-sale was screened for a
 meter past legal validity, a unit-price outside its band, a dispense volume that
 would breach ullage, or an inoperational vapor-recovery system in a mandated
@@ -228,7 +228,7 @@ hiccup can never auto-dispense fuel or auto-settle a sale.
   the upstream siblings' integrity-flag check, all discipline-reuse documented
   as such per `cloud-itonami-isic-0162` Decision 3.
 - `MemStore` || `DatomicStore` parity is proven by
-  `test/forecourt/store_contract_test.clj`.
+  `test/forecourt/store_contract_test.cljk`.
 - 38 tests / 194 assertions pass; lint is clean; the demo
   (`clojure -M:dev:run`) walks one clean dispense + settlement lifecycle,
   plus seven HARD-hold scenarios (no spec-basis, meter-uncertain,

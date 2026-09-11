@@ -63,7 +63,7 @@ the domain (Community Automotive Fuel Retail, ISIC 4730) and to the three
 `:environmental-protection`, `:transparency`).
 
 This is the rule the companion contract test
-(`test/forecourt/governor_contract_test.clj`) encodes end-to-end: the
+(`test/forecourt/governor_contract_test.cljk`) encodes end-to-end: the
 ForecourtAdvisor never dispenses fuel through a pump or settles a sale the
 Forecourt Safety Governor would reject, `:pump/dispense` and `:sale/settle`
 NEVER auto-commit at any phase, `:sale/intake` (no direct capital risk) MAY
