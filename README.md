@@ -81,7 +81,7 @@ Two independent layers enforce this (`forecourt.governor`'s
 `:pump/dispense`/`:sale/settle` high-stakes gate and
 `forecourt.phase`'s phase table, which never puts either op in any
 phase's `:auto` set) -- see `forecourt.phase`'s docstring and
-`test/forecourt/phase_test.clj`'s
+`test/forecourt/phase_test.cljk`'s
 `pump-dispense-never-auto-at-any-phase`/`sale-settle-never-auto-at-
 any-phase`. The actor may draft, check and recommend; a human station
 manager is always the one who actually dispenses fuel through the
@@ -182,14 +182,14 @@ robotics/identity/forms/dmn/bpmn/audit-ledger stack.
 
 | File | Role |
 |---|---|
-| `src/forecourt/store.cljc` | **Store** protocol -- `MemStore` ‖ `DatomicStore` (`langchain.db`) + append-only audit ledger + dispense AND sale history (dual history). The double-actuation guard checks dedicated `:dispensed?`/`:settled?` booleans rather than a `:status` value |
-| `src/forecourt/registry.cljc` | Dispense/settlement draft records, plus the self-contained forecourt-safety range-check pure functions (`meter-uncertain?`, `price-anomaly?`, `overfill-risk?`) the governor re-verifies against -- no external capability library to delegate to |
-| `src/forecourt/facts.cljc` | Per-jurisdiction legal-metrology / fire-safety / vapor-recovery catalog with an official spec-basis citation + the `:mandated`/`:not-mandated` vapor-recovery jurisdiction split per entry, honest coverage reporting |
-| `src/forecourt/forecourtadvisor.cljc` | **ForecourtAdvisor** -- `mock-advisor` ‖ `llm-advisor`; intake/price-assessment/dispense/settlement proposals |
-| `src/forecourt/governor.cljc` | **Forecourt Safety Governor** -- 6 HARD checks (spec-basis · evidence-incomplete · meter-uncertain, the retailops meter-calibration discipline · price-anomaly, the retailops price-band discipline · overfill-risk, the fabrication ullage discipline · vapor-recovery-inoperational, the `:mandated`/`:not-mandated` jurisdiction split) + 2 double-actuation guards + 1 soft (confidence/actuation gate) |
-| `src/forecourt/phase.cljc` | **Phase 0→3** -- read-only → assisted intake → assisted verify → supervised (dispense/settlement always human; fuel-sale intake is the ONLY auto-eligible op, no direct capital risk) |
-| `src/forecourt/operation.cljc` | **OperationActor** -- langgraph StateGraph |
-| `src/forecourt/sim.cljc` | demo driver |
+| `src/forecourt/store.cljk` | **Store** protocol -- `MemStore` ‖ `DatomicStore` (`langchain.db`) + append-only audit ledger + dispense AND sale history (dual history). The double-actuation guard checks dedicated `:dispensed?`/`:settled?` booleans rather than a `:status` value |
+| `src/forecourt/registry.cljk` | Dispense/settlement draft records, plus the self-contained forecourt-safety range-check pure functions (`meter-uncertain?`, `price-anomaly?`, `overfill-risk?`) the governor re-verifies against -- no external capability library to delegate to |
+| `src/forecourt/facts.cljk` | Per-jurisdiction legal-metrology / fire-safety / vapor-recovery catalog with an official spec-basis citation + the `:mandated`/`:not-mandated` vapor-recovery jurisdiction split per entry, honest coverage reporting |
+| `src/forecourt/forecourtadvisor.cljk` | **ForecourtAdvisor** -- `mock-advisor` ‖ `llm-advisor`; intake/price-assessment/dispense/settlement proposals |
+| `src/forecourt/governor.cljk` | **Forecourt Safety Governor** -- 6 HARD checks (spec-basis · evidence-incomplete · meter-uncertain, the retailops meter-calibration discipline · price-anomaly, the retailops price-band discipline · overfill-risk, the fabrication ullage discipline · vapor-recovery-inoperational, the `:mandated`/`:not-mandated` jurisdiction split) + 2 double-actuation guards + 1 soft (confidence/actuation gate) |
+| `src/forecourt/phase.cljk` | **Phase 0→3** -- read-only → assisted intake → assisted verify → supervised (dispense/settlement always human; fuel-sale intake is the ONLY auto-eligible op, no direct capital risk) |
+| `src/forecourt/operation.cljk` | **OperationActor** -- langgraph StateGraph |
+| `src/forecourt/sim.cljk` | demo driver |
 | `test/forecourt/*_test.clj` | governor contract · phase invariants · store parity · registry conformance · facts coverage |
 
 ## Business-process coverage (honest)
