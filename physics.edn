@@ -1,0 +1,33 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:dev:physics` runs it.
+;;
+;; README "Robotics premise": the fuel dispenser is the physical actuator;
+;; an autonomous forecourt robot / the pump controller runs a real volume of
+;; fuel through the pump into a vehicle and stops it (ISIC 4730). The
+;; physical work: the forecourt robot lifting the nozzle from the dispenser
+;; boot to the filler neck, and the gasoline line from the submersible pump
+;; in the underground tank to the nozzle.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isic-4730"
+ :cases
+ [{:id :nozzle-to-filler-neck
+   :kind :manipulator
+   :procedure "forecourt robot lifts the nozzle out of the dispenser boot and carries it, with the hose drag, down to the vehicle's filler neck"
+   :params {:l1-m 0.80 :l2-m 0.70 :m1-kg 10.0 :m2-kg 6.0
+            :from [0.40 0.60] :to [1.30 0.10] :duration-s 2.5 :steps 500}
+   :sweep {:param :payload-kg :values [1.0 2.0 3.0 4.0 5.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 150.0 :basis "estimate: continuous shoulder torque of a ~5 kg-payload arm with a 1.5 m reach"}
+   :boundary {:lo 0.2 :hi 40.0}}
+  {:id :dispense-line-loss
+   :kind :pipe-flow
+   :procedure "submersible pump lifts gasoline 4 m from the underground tank through 30 m of line, the meter and the 3/4 inch hose (19 mm bore, 35 m in total) to the nozzle; the dispensing flow is swept up to 60 L/min"
+   :params {:diameter-m 0.019 :length-m 35.0 :roughness-m 1.5e-6 :density-kg-m3 740.0
+            :viscosity-pa-s 5.0e-4 :pump-efficiency 0.50 :elevation-m 4.0}
+   :sweep {:param :q-m3s :values [0.0003 0.0005 0.00063 0.0008 0.001]}
+   :quantity :pressure-drop-pa
+   :limit {:max 170000.0 :basis "estimate: pressure the submersible turbine pump holds at the dispenser inlet; meter, valves and breakaway fittings are not modelled"}
+   :boundary {:lo 0.0001 :hi 0.002}}]}
